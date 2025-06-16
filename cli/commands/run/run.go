@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +71,12 @@ var TerraformCommandsThatDoNotNeedInit = []string{
 	"version",
 	"terragrunt-info",
 	"graph-dependencies",
+}
+
+var TerraformApplyCmdLocalStateFlags = []string{
+	"-state",
+	"-state-out",
+	"-backup",
 }
 
 var ModuleRegex = regexp.MustCompile(`module[[:blank:]]+".+"`)
@@ -836,6 +843,28 @@ func checkProtectedModule(terragruntOptions *options.TerragruntOptions, terragru
 	return nil
 }
 
+// Checks if variable flags (`-var` and `-var-file`) should be skipped due to passed plan file
+func skipVars(opts *options.TerragruntOptions) bool {
+	cmd := opts.TerraformCliArgs.First()
+	terraformCmdArgs := opts.TerraformCliArgs.Tail()
+
+	if cmd == tf.CommandNameApply || cmd == tf.CommandNameDestroy {
+		for i, arg := range terraformCmdArgs {
+			if !strings.HasPrefix(arg, "-") && util.IsFile(arg) {
+				// If the first argument is a file we're sure it's the plan file
+				if i == 0 {
+					return true
+				}
+				// We check if the previous arg is a flag that accepts a filepath as an argument
+				if !slices.Contains(TerraformApplyCmdLocalStateFlags, terraformCmdArgs[i-1]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func FilterTerraformExtraArgs(l log.Logger, opts *options.TerragruntOptions, terragruntConfig *config.TerragruntConfig) []string {
 	out := []string{}
 	cmd := opts.TerraformCliArgs.First()
@@ -843,8 +872,7 @@ func FilterTerraformExtraArgs(l log.Logger, opts *options.TerragruntOptions, ter
 	for _, arg := range terragruntConfig.Terraform.ExtraArgs {
 		for _, argCmd := range arg.Commands {
 			if cmd == argCmd {
-				lastArg := opts.TerraformCliArgs.Last()
-				skipVars := (cmd == tf.CommandNameApply || cmd == tf.CommandNameDestroy) && util.IsFile(lastArg)
+				skipVars := skipVars(opts)
 
 				// The following is a fix for GH-493.
 				// If the first argument is "apply" and the second argument is a file (plan),
